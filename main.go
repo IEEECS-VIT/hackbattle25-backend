@@ -8,6 +8,8 @@ import (
 	firebase "firebase.google.com/go/v4"
 	"google.golang.org/api/option"
 	"github.com/gorilla/mux"
+	"github.com/IEEECS-VIT/hackbattle25-backend/routes"
+
 )
 
 func main() {
@@ -30,8 +32,13 @@ func main() {
 
 	//Server setup
 	r := mux.NewRouter()
-
-	// routes.AuthRoutes(r, app)
+	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Router is working!"))
+	}).Methods("GET")
+	
+	routes.AuthRoutes(r, app)
+	
 	log.Println("Server is running on port 8080")
 	log.Fatal(http.ListenAndServe(":8080", r))
 }
