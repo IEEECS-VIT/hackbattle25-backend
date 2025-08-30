@@ -1,44 +1,29 @@
 package main
 
 import (
-	"context"
 	"log"
 	"net/http"
 
-	firebase "firebase.google.com/go/v4"
-	"google.golang.org/api/option"
-	"github.com/gorilla/mux"
+	firebase "github.com/IEEECS-VIT/hackbattle25-backend/config"
 	"github.com/IEEECS-VIT/hackbattle25-backend/routes"
-
+	"github.com/gorilla/mux"
 )
 
 func main() {
-	//Firebase initialization
-	ctx := context.Background()
-
-	opt := option.WithCredentialsFile("serviceAccountKey.json")
-
-	app, err := firebase.NewApp(ctx, nil, opt)
-	if err != nil {
-		log.Fatalf("error initializing firebase app: %v\n", err)
-	}
-	log.Println("Firebase app initialized successfully.")
-
-	_, err = app.Auth(ctx)
-	if err != nil {
-		log.Fatalf("Failed to verify connection with Firebase: %v", err)
-	}
-	log.Println("Successfully verified connection to Firebase services!")
-
-	//Server setup
-	r := mux.NewRouter()
-	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	//Starting the server
+	router := mux.NewRouter()
+	router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("Router is working!"))
 	}).Methods("GET")
-	
-	routes.AuthRoutes(r, app)
-	
-	log.Println("Server is running on port 8080")
-	log.Fatal(http.ListenAndServe(":8080", r))
+
+	//Initialize Firebase
+	firebase.InitFirebase()
+
+	//Registering routes
+	routes.AuthRoutes(router, firebase.App)
+	routes.RegisterTeamRoutes(router)
+
+	log.Println("Server is running on port 8081")
+	log.Fatal(http.ListenAndServe(":8081", router))
 }

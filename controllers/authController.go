@@ -47,4 +47,3 @@ func Register(authClient *auth.Client) http.HandlerFunc {
 		log.Printf("Successfully created user: %v\n", userRecord.UID)
 	}
 }
-
