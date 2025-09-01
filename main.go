@@ -20,6 +20,7 @@ func main() {
 
 	routes.RegisterAuthRoutes(router, config.AuthClient, config.FirestoreClient)
 	routes.RegisterTeamRoutes(router)
+	routes.RegisterSubmitRoutes(router)
 
 	log.Println("Server is running on port 8081")
 	log.Fatal(http.ListenAndServe(":8081", router))
