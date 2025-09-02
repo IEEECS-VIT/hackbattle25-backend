@@ -9,7 +9,7 @@ import (
 )
 
 func RegisterTeamRoutes(r *mux.Router) {
-	r.Handle("/teams", middleware.AuthMiddleware(http.HandlerFunc(controllers.CreateTeam))).Methods("POST")
+	r.Handle("/teams/create", middleware.AuthMiddleware(http.HandlerFunc(controllers.CreateTeam))).Methods("POST")
 	r.Handle("/teams/join", middleware.AuthMiddleware(http.HandlerFunc(controllers.JoinTeam))).Methods("PUT")
 	r.Handle("/teams/get", middleware.AuthMiddleware(http.HandlerFunc(controllers.GetTeam))).Methods("GET")
 }
