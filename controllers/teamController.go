@@ -304,3 +304,149 @@ func GetTeam(w http.ResponseWriter, r *http.Request) {
     w.WriteHeader(http.StatusOK)
     json.NewEncoder(w).Encode(response)
 }
+
+
+func ChangeTeamName(w http.ResponseWriter, r *http.Request) {
+    token := r.Context().Value(middleware.UserKey).(*auth.Token)
+    userID := token.UID
+    ctx := context.Background()
+
+    var payload struct {
+        Name string `json:"name"`
+    }
+    if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.Name == "" {
+        http.Error(w, "Invalid team name provided", http.StatusBadRequest)
+        return
+    }
+
+	//only leader can change
+    teamID, err := verifyTeamLeader(ctx, userID)
+    if err != nil {
+        handleFirestoreError(w, err)
+        return
+    }
+
+    q := config.FirestoreClient.Collection("teams").Where("Name", "==", payload.Name).Limit(1)
+    if docs, _ := q.Documents(ctx).GetAll(); len(docs) > 0 {
+        http.Error(w, "This team name is already taken", http.StatusConflict)
+        return
+    }
+
+    teamRef := config.FirestoreClient.Collection("teams").Doc(teamID)
+    _, err = teamRef.Update(ctx, []firestore.Update{{Path: "Name", Value: payload.Name}})
+    if err != nil {
+        http.Error(w, "Failed to update team name", http.StatusInternalServerError)
+        return
+    }
+
+    w.WriteHeader(http.StatusOK)
+    json.NewEncoder(w).Encode(map[string]string{"message": "Team name updated successfully"})
+}
+
+func RemoveMember(w http.ResponseWriter, r *http.Request) {
+    token := r.Context().Value(middleware.UserKey).(*auth.Token)
+    leaderID := token.UID
+    ctx := context.Background()
+
+    var payload struct {
+        MemberID string `json:"memberId"`
+    }
+    if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.MemberID == "" {
+        http.Error(w, "Invalid member ID provided", http.StatusBadRequest)
+        return
+    }
+
+    if leaderID == payload.MemberID {
+        http.Error(w, "Leader cannot remove themselves from the team", http.StatusForbidden)
+        return
+    }
+
+    teamID, err := verifyTeamLeader(ctx, leaderID)
+    if err != nil {
+        handleFirestoreError(w, err)
+        return
+    }
+
+    teamRef := config.FirestoreClient.Collection("teams").Doc(teamID)
+    memberRef := config.FirestoreClient.Collection("users").Doc(payload.MemberID)
+	err = config.FirestoreClient.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+        memberDoc, err := tx.Get(memberRef)
+        if err != nil {
+            return &httpError{"Member user profile not found", http.StatusNotFound}
+        }
+        memberTeamID, _ := memberDoc.DataAt("TeamID")
+        if memberTeamID != teamID {
+            return &httpError{"This member is not part of your team", http.StatusBadRequest}
+        }
+
+        if err := tx.Update(teamRef, []firestore.Update{{Path: "members", Value: firestore.ArrayRemove(payload.MemberID)}}); err != nil {
+            return err
+        }
+
+        return tx.Update(memberRef, []firestore.Update{
+            {Path: "TeamID", Value: nil},
+            {Path: "IsLead", Value: false},
+        })
+    })
+
+    if err != nil {
+        handleFirestoreError(w, err)
+        return
+    }
+
+    w.WriteHeader(http.StatusOK)
+    json.NewEncoder(w).Encode(map[string]string{"message": "Member removed successfully"})
+}
+
+func DeleteTeam(w http.ResponseWriter, r *http.Request) {
+    token := r.Context().Value(middleware.UserKey).(*auth.Token)
+    leaderID := token.UID
+    ctx := context.Background()
+
+    // 1. Verify the user is a team leader and get their teamID.
+    teamID, err := verifyTeamLeader(ctx, leaderID)
+    if err != nil {
+        handleFirestoreError(w, err)
+        return
+    }
+
+    teamRef := config.FirestoreClient.Collection("teams").Doc(teamID)
+    leaderRef := config.FirestoreClient.Collection("users").Doc(leaderID)
+
+    // 2. Use a transaction to ensure the entire operation is atomic.
+    err = config.FirestoreClient.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+        teamDoc, err := tx.Get(teamRef)
+        if err != nil {
+            return &httpError{"Team not found", http.StatusNotFound}
+        }
+
+        // 3. Check if there are other members in the team.
+        members, err := teamDoc.DataAt("members")
+        if err != nil {
+            return err // Should not happen if data is consistent.
+        }
+
+		 if len(members.([]interface{})) > 1 {
+            return &httpError{"You must remove all other members before deleting the team", http.StatusForbidden}
+        }
+
+        // 4. If only the leader is left, delete the team document.
+        if err := tx.Delete(teamRef); err != nil {
+            return err
+        }
+
+        // 5. Update the leader's user document to remove them from the team.
+        return tx.Update(leaderRef, []firestore.Update{
+            {Path: "TeamID", Value: nil},
+            {Path: "IsLead", Value: false},
+        })
+    })
+
+    if err != nil {
+        handleFirestoreError(w, err)
+        return
+    }
+
+    w.WriteHeader(http.StatusOK)
+    json.NewEncoder(w).Encode(map[string]string{"message": "Team deleted successfully"})
+}

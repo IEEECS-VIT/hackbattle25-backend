@@ -13,4 +13,7 @@ func RegisterTeamRoutes(r *mux.Router) {
 	r.Handle("/teams/join", middleware.AuthMiddleware(http.HandlerFunc(controllers.JoinTeam))).Methods("PUT")
 	r.Handle("/teams/get", middleware.AuthMiddleware(http.HandlerFunc(controllers.GetTeam))).Methods("GET")
 	r.Handle("/teams/leave", middleware.AuthMiddleware(http.HandlerFunc(controllers.LeaveTeam))).Methods("DELETE")
+	r.Handle("/teams/change-name", middleware.AuthMiddleware(http.HandlerFunc(controllers.ChangeTeamName))).Methods("PUT")
+    r.Handle("/teams/remove-member", middleware.AuthMiddleware(http.HandlerFunc(controllers.RemoveMember))).Methods("POST")
+	r.Handle("/teams/delete", middleware.AuthMiddleware(http.HandlerFunc(controllers.DeleteTeam))).Methods("DELETE")
 }
