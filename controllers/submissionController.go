@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+	"log"
 
 	"cloud.google.com/go/firestore"
 	"firebase.google.com/go/v4/auth"
@@ -20,11 +21,51 @@ type SubmitTaskPayload struct {
 }
 
 type UpdateTaskPayload struct {
-	SubmissionID string   `json:"submission_id"` // Firestore document ID
-	ProblemStmt  string   `json:"problem_stmt"`
-	GithubLink   string   `json:"github_link"`
-	FigmaLink    string   `json:"figma_link"`
+	ProblemStmt  *string   `json:"problem_stmt"`
+	GithubLink   *string   `json:"github_link"`
+	FigmaLink    *string   `json:"figma_link"`
 	OtherFiles   []string `json:"other_files"`
+}
+
+func verifyTeamLeader(ctx context.Context, userID string) (string, error) {
+    userDoc, err := config.FirestoreClient.Collection("users").Doc(userID).Get(ctx)
+    if err != nil {
+        return "", &httpError{"User not found", http.StatusNotFound}
+    }
+    teamID, err := userDoc.DataAt("TeamID")
+    if err != nil || teamID == nil {
+        return "", &httpError{"User is not on a team", http.StatusForbidden}
+    }
+
+    teamDoc, err := config.FirestoreClient.Collection("teams").Doc(teamID.(string)).Get(ctx)
+    if err != nil {
+        return "", &httpError{"Team not found", http.StatusInternalServerError}
+    }
+    leaderID, err := teamDoc.DataAt("leaderId")
+    if err != nil || leaderID.(string) != userID {
+        return "", &httpError{"Only the team leader can perform this action", http.StatusForbidden}
+    }
+
+    return teamID.(string), nil
+}
+
+type httpError struct {
+    message string
+    code    int
+}
+
+func (e *httpError) Error() string {
+    return e.message
+}
+
+func handleFirestoreError(w http.ResponseWriter, err error) {
+    if e, ok := err.(*httpError); ok {
+        http.Error(w, e.message, e.code)
+    } else {
+        // Log the actual error for debugging
+        log.Printf("Internal server error: %v", err)
+        http.Error(w, "Internal server error", http.StatusInternalServerError)
+    }
 }
 
 func SubmitTasks(w http.ResponseWriter, r *http.Request) {
@@ -42,10 +83,21 @@ func SubmitTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := context.Background()
-	tasks := config.FirestoreClient.Collection("tasks")
+	teamID, err := verifyTeamLeader(ctx, userID)
+	if err != nil {
+        handleFirestoreError(w, err)
+        return
+    }
+
+	tasksCollection := config.FirestoreClient.Collection("tasks")
+	iter := tasksCollection.Where("team_id", "==", teamID).Limit(1).Documents(ctx)
+	if _, err := iter.Next(); err == nil {
+        http.Error(w, "Team has already submitted. Use the update endpoint.", http.StatusConflict)
+        return
+    }
 
 	doc := map[string]interface{}{
-		"user_id":      userID,
+		"team_id":      teamID,
 		"problem_stmt": payload.ProblemStmt,
 		"github_link":  payload.GithubLink,
 		"figma_link":   payload.FigmaLink,
@@ -53,7 +105,7 @@ func SubmitTasks(w http.ResponseWriter, r *http.Request) {
 		"submitted_at": time.Now(),
 	}
 
-	docRef, _, err := tasks.Add(ctx, doc)
+	docRef, _, err := tasksCollection.Add(ctx, doc)
 	if err != nil {
 		http.Error(w, "Failed to submit task", http.StatusInternalServerError)
 		return
@@ -73,31 +125,53 @@ func UpdateSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	userID := token.UID
+	ctx := context.Background()
+
+	teamID, err := verifyTeamLeader(ctx, userID)
+    if err != nil {
+        handleFirestoreError(w, err)
+        return
+    }
+
+	tasksCollection := config.FirestoreClient.Collection("tasks")
+	iter := tasksCollection.Where("team_id", "==", teamID).Limit(1).Documents(ctx)
+	docSnap, err := iter.Next()
+	if err != nil {
+		http.Error(w, "Submission not found for this team", http.StatusForbidden)
+		return
+	}
+	taskRef := docSnap.Ref
 
 	var payload UpdateTaskPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.SubmissionID == "" {
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, "Invalid input", http.StatusBadRequest)
 		return
 	}
 
-	ctx := context.Background()
-	taskRef := config.FirestoreClient.Collection("tasks").Doc(payload.SubmissionID)
+	 var updates []firestore.Update
 
-	docSnap, err := taskRef.Get(ctx)
-	if err != nil || docSnap.Data()["user_id"] != userID {
-		http.Error(w, "Submission not found or forbidden", http.StatusForbidden)
-		return
-	}
+    if payload.ProblemStmt != nil {
+        updates = append(updates, firestore.Update{Path: "problem_stmt", Value: *payload.ProblemStmt})
+    }
+    if payload.GithubLink != nil {
+        updates = append(updates, firestore.Update{Path: "github_link", Value: *payload.GithubLink})
+    }
+    if payload.FigmaLink != nil {
+        updates = append(updates, firestore.Update{Path: "figma_link", Value: *payload.FigmaLink})
+    }
+    if payload.OtherFiles != nil {
+        updates = append(updates, firestore.Update{Path: "other_files", Value: payload.OtherFiles})
+    }
 
-	updates := map[string]interface{}{
-		"problem_stmt": payload.ProblemStmt,
-		"github_link":  payload.GithubLink,
-		"figma_link":   payload.FigmaLink,
-		"other_files":  payload.OtherFiles,
-		"updated_at":   time.Now(),
-	}
+    if len(updates) == 0 {
+        w.WriteHeader(http.StatusOK)
+        json.NewEncoder(w).Encode(map[string]string{"message": "No fields to update"})
+        return
+    }
 
-	_, err = taskRef.Set(ctx, updates, firestore.MergeAll)
+    updates = append(updates, firestore.Update{Path: "updated_at", Value: time.Now()})
+
+	_, err = taskRef.Update(ctx, updates)
 	if err != nil {
 		http.Error(w, "Failed to update submission", http.StatusInternalServerError)
 		return
@@ -108,5 +182,3 @@ func UpdateSubmission(w http.ResponseWriter, r *http.Request) {
 		"message": "Submission updated successfully",
 	})
 }
-
-//after user setup, will make sure only leader gets to upload
