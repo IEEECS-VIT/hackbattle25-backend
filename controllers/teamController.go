@@ -82,7 +82,7 @@ func generateTeamCode() string {
 func CreateTeam(w http.ResponseWriter, r *http.Request) {
 	token := r.Context().Value(middleware.UserKey).(*auth.Token)
 	userID := token.UID
-	userEmail := token.Claims["email"].(string)
+	userEmail := strings.ToLower(token.Claims["email"].(string))
 
 	var payload TeamPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.Name == "" {
