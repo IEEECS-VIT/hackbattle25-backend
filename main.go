@@ -6,6 +6,7 @@ import (
 
 	"github.com/IEEECS-VIT/hackbattle25-backend/config"
 	"github.com/IEEECS-VIT/hackbattle25-backend/routes"
+	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 )
 
@@ -20,7 +21,13 @@ func main() {
 
 	routes.RegisterAuthRoutes(router, config.AuthClient, config.FirestoreClient)
 	routes.RegisterTeamRoutes(router)
+	
+	allowedOrigins := handlers.AllowedOrigins([]string{"http://localhost:3000", "http://localhost:3001", "http://localhost:3002","https://hackbattle.ieeecsvit.com","https://elegant-hotteok-e0afec.netlify.app"})
+	allowedMethods := handlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE", "OPTIONS"})
+	allowedHeaders := handlers.AllowedHeaders([]string{"Content-Type", "Authorization"})
+	allowCredentials := handlers.AllowCredentials()
 
 	log.Println("Server is running on port 8081")
-	log.Fatal(http.ListenAndServe(":8081", router))
+	log.Fatal(http.ListenAndServe(":8081", handlers.CORS(allowedOrigins, allowedMethods, allowedHeaders, allowCredentials)(router)))
 }
+
