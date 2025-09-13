@@ -35,12 +35,9 @@ func AuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Attach user info to the request context.
-		// The `*auth.Token` object contains the UID, email, etc.
 		ctx := context.WithValue(r.Context(), UserKey, token)
 		r = r.WithContext(ctx)
 
-		// 5. Pass control to the next handler in the chain
 		next.ServeHTTP(w, r)
 	})
 }

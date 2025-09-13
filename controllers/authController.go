@@ -10,7 +10,6 @@ import (
 
 	"cloud.google.com/go/firestore"
 	"firebase.google.com/go/v4/auth"
-	"github.com/IEEECS-VIT/hackbattle25-backend/models"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -46,10 +45,10 @@ func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.Han
 		ctx := context.Background()
 
 		userRef := firestoreClient.Collection("users").Doc(userEmail)
-		_, err = userRef.Get(ctx)
+		doc, err := userRef.Get(ctx)  //get the user document
 
 		if status.Code(err) == codes.NotFound {
-			// No document found, user is not registered
+			// no document found, user is not registered
 			log.Printf("Sign-in failed: email '%s' not found in registrations.", userEmail)
 			http.Error(w, "User has not registered for the event.", http.StatusForbidden)
 			return
@@ -60,32 +59,20 @@ func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.Han
 			return
 		}
 
-		// 4. User is registered. Check if a user profile document exists, if not, create it.
-		profileRef := firestoreClient.Collection("users").Doc(userEmail) // same email ID
-		_, err = profileRef.Get(ctx)
-
-		if status.Code(err) == codes.NotFound {
-			log.Printf("First sign-in for user %s. Creating user document.", userEmail)
-			newUser := models.User{
-				Name:      token.Claims["name"].(string),
-				Email:     userEmail,
-				TeamID:    nil, // User has no team initially
-				IsLead:    false,
-				CreatedAt: time.Now(),
-				UpdatedAt: time.Now(),
-			}
-
-			if _, createErr := profileRef.Set(ctx, newUser); createErr != nil {
-				log.Printf("Failed to create user document for email %s: %v", userEmail, createErr)
-				http.Error(w, "Failed to create user profile", http.StatusInternalServerError)
-				return
-			}
-		} else if err != nil {
-			// Any other error during the Get operation is a server issue.
-			log.Printf("Error checking for user document %s: %v", userEmail, err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
-		}
+		//4. User is registered. Check if UID is missing (first sign-in).
+        if _, err := doc.DataAt("UID"); err != nil {
+            log.Printf("First sign-in for user %s. Updating user document.", userEmail)
+            updates := []firestore.Update{
+                {Path: "UID", Value: token.UID},
+                {Path: "Name", Value: token.Claims["name"]},
+                {Path: "UpdatedAt", Value: time.Now()},
+            }
+            if _, updateErr := userRef.Update(ctx, updates); updateErr != nil {
+                log.Printf("Failed to update user document for email %s: %v", userEmail, updateErr)
+                http.Error(w, "Failed to update user profile", http.StatusInternalServerError)
+                return
+            }
+        }
 
 		// 5. User is registered and has a user document, sign-in is successful
 		w.Header().Set("Content-Type", "application/json")
