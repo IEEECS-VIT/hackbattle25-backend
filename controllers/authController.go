@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"strconv"
 	"context"
 	"encoding/json"
 	"log"
@@ -74,12 +75,24 @@ func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.Han
             }
         }
 
+		var isInTeam bool = false
+		TeamID , err := doc.DataAt("TeamID")
+
+		if(err == nil && TeamID != nil){
+			isInTeam = true
+		} else{
+			isInTeam = false
+		}
+		
+
 		// 5. User is registered and has a user document, sign-in is successful
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{
 			"message": "Sign-in successful",
 			"email":   userEmail,
+			"isInTeam" : strconv.FormatBool(isInTeam),
+
 		})
 		log.Printf("Successfully signed in user: %s", userEmail)
 
