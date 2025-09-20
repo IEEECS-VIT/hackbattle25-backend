@@ -22,7 +22,7 @@ func main() {
 	routes.RegisterAuthRoutes(router, config.AuthClient, config.FirestoreClient)
 	routes.RegisterTeamRoutes(router)
 	
-	allowedOrigins := handlers.AllowedOrigins([]string{"http://localhost:3000", "http://localhost:3001", "http://localhost:3002","https://hackbattle.ieeecsvit.com","https://elegant-hotteok-e0afec.netlify.app","https://hackbattle25.netlify.app"})
+	allowedOrigins := handlers.AllowedOrigins([]string{"http://localhost:3000", "http://localhost:3001", "http://localhost:3002","https://hackbattle.ieeecsvit.com","https://elegant-hotteok-e0afec.netlify.app","https://hackbattle25.netlify.app","https://hackbattle-25.vercel.app"})
 	allowedMethods := handlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE", "OPTIONS"})
 	allowedHeaders := handlers.AllowedHeaders([]string{"Content-Type", "Authorization"})
 	allowCredentials := handlers.AllowCredentials()
