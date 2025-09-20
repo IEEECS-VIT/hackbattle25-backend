@@ -9,5 +9,5 @@ import (
 )
 
 func RegisterAuthRoutes(router *mux.Router, authClient *auth.Client, firestoreClient *firestore.Client) {
-	router.HandleFunc("/signin", controllers.SignIn(authClient, firestoreClient)).Methods("POST")
+	router.HandleFunc("/signin", controllers.SignIn(authClient, firestoreClient)).Methods("GET")
 }

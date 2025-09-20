@@ -1,40 +1,36 @@
 package controllers
 
 import (
-	"strconv"
 	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
-	"time"
-
 	"cloud.google.com/go/firestore"
 	"firebase.google.com/go/v4/auth"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-type GoogleSignInPayload struct {
-	IDToken string `json:"idToken"`
-}
 
 func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// 1. Decode the incoming JSON payload to get the Google ID token
-		var payload GoogleSignInPayload
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, "Invalid request payload", http.StatusBadRequest)
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			http.Error(w, "Missing Authorization header", http.StatusUnauthorized)
 			return
 		}
 
-		if payload.IDToken == "" {
-			http.Error(w, "Missing ID token", http.StatusBadRequest)
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+			http.Error(w, "Invalid Authorization header format", http.StatusUnauthorized)
 			return
 		}
+
+		idToken := parts[1]
 
 		// 2. Verify the Google ID token using Firebase Auth
-		token, err := authClient.VerifyIDToken(context.Background(), payload.IDToken)
+		token, err := authClient.VerifyIDToken(context.Background(), idToken)
 		if err != nil {
 			log.Printf("error verifying ID token: %v\n", err)
 			http.Error(w, "Invalid or expired token", http.StatusUnauthorized)
@@ -51,7 +47,7 @@ func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.Han
 		if status.Code(err) == codes.NotFound {
 			// no document found, user is not registered
 			log.Printf("Sign-in failed: email '%s' not found in registrations.", userEmail)
-			http.Error(w, "User has not registered for the event.", http.StatusForbidden)
+			http.Error(w, "User has not registered for the event.", http.StatusNoContent)
 			return
 		}
 		if err != nil {
@@ -59,21 +55,6 @@ func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.Han
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
-
-		//4. User is registered. Check if UID is missing (first sign-in).
-        if _, err := doc.DataAt("UID"); err != nil {
-            log.Printf("First sign-in for user %s. Updating user document.", userEmail)
-            updates := []firestore.Update{
-                {Path: "UID", Value: token.UID},
-                {Path: "Name", Value: token.Claims["name"]},
-                {Path: "UpdatedAt", Value: time.Now()},
-            }
-            if _, updateErr := userRef.Update(ctx, updates); updateErr != nil {
-                log.Printf("Failed to update user document for email %s: %v", userEmail, updateErr)
-                http.Error(w, "Failed to update user profile", http.StatusInternalServerError)
-                return
-            }
-        }
 
 		var isInTeam bool = false
 		TeamID , err := doc.DataAt("TeamID")
@@ -83,16 +64,13 @@ func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.Han
 		} else{
 			isInTeam = false
 		}
-		
+		log.Printf("User %s found in Firestore. TeamID: %v", userEmail, TeamID)
 
 		// 5. User is registered and has a user document, sign-in is successful
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{
-			"message": "Sign-in successful",
-			"email":   userEmail,
-			"isInTeam" : strconv.FormatBool(isInTeam),
-
+		json.NewEncoder(w).Encode(map[string]bool{
+			"isInTeam" : isInTeam,
 		})
 		log.Printf("Successfully signed in user: %s", userEmail)
 
