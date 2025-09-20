@@ -122,7 +122,6 @@ func getUserNameFromContext(r *http.Request) (string, bool) {
 	return name, ok
 }
 
-// CreateTeam stores leader as member with email+name
 func CreateTeam(w http.ResponseWriter, r *http.Request) {
 	userEmail, ok := getUserEmailFromContext(r)
 	if !ok {
@@ -146,32 +145,36 @@ func CreateTeam(w http.ResponseWriter, r *http.Request) {
 	userRef := config.FirestoreClient.Collection("users").Doc(userEmail)
 	teamsCollection := config.FirestoreClient.Collection("teams")
 
+	// Check if team name already exists
 	q := teamsCollection.Where("Name", "==", payload.Name).Limit(1)
 	if docs, _ := q.Documents(ctx).GetAll(); len(docs) > 0 {
-		http.Error(w, "This team name is already taken", http.StatusAlreadyReported)
+		http.Error(w, "This team name is already taken", http.StatusConflict)
 		return
 	}
 
 	teamCode, _ := generateTeamCode(ctx, teamsCollection)
+
+	var alreadyInTeam bool
 
 	err := config.FirestoreClient.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		userDoc, err := tx.Get(userRef)
 		if err != nil {
 			return status.Errorf(codes.NotFound, "User profile not found")
 		}
+
 		if teamID, _ := userDoc.DataAt("TeamID"); teamID != nil {
-			return status.Errorf(codes.AlreadyExists, "User is already in a team")
+			alreadyInTeam = true
+			return nil // stop here, don’t create a team
 		}
 
 		newTeamRef := teamsCollection.Doc(teamCode)
-		err = tx.Set(newTeamRef, map[string]interface{}{
+		if err := tx.Set(newTeamRef, map[string]interface{}{
 			"Name":      payload.Name,
 			"Code":      teamCode,
 			"leaderId":  userEmail,
 			"members":   []map[string]interface{}{{"email": userEmail, "name": userName}},
 			"CreatedAt": time.Now(),
-		})
-		if err != nil {
+		}); err != nil {
 			return err
 		}
 
@@ -186,12 +189,19 @@ func CreateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if alreadyInTeam {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"message": "You are already in a team"})
+		return
+	}
+
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "Team created successfully",
 		"code":    teamCode,
 	})
 }
+
 
 // JoinTeam adds email+name as a member
 func JoinTeam(w http.ResponseWriter, r *http.Request) {
@@ -220,7 +230,8 @@ func JoinTeam(w http.ResponseWriter, r *http.Request) {
 			return status.Errorf(codes.NotFound, "User profile not found")
 		}
 		if teamID, _ := userDoc.DataAt("TeamID"); teamID != nil {
-			return status.Errorf(codes.AlreadyExists, "User is already in a team")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"message": "You are already in a team"})
 		}
 
 		teamSnap, err := tx.Get(teamRef)
@@ -234,7 +245,8 @@ func JoinTeam(w http.ResponseWriter, r *http.Request) {
 
 		members, _ := teamSnap.DataAt("members")
 		if len(members.([]interface{})) >= maxTeamSize {
-			return status.Errorf(codes.FailedPrecondition, "Team is already full")
+			w.WriteHeader(http.StatusAlreadyReported)
+			json.NewEncoder(w).Encode(map[string]string{"message": "Team at max size"})	
 		}
 
 		userName, ok := getUserNameFromContext(r)
