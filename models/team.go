@@ -7,9 +7,8 @@ type Team struct {
 	Name      string    `json:"name"`
 	Code      string    `gorm:"unique;not null;size:6" json:"code"`
 	CreatedAt time.Time `json:"createdAt"`
-
+	LeaderID string    `json:"leader_id"`
 	Users []User `gorm:"foreignKey:TeamID" json:"users,omitempty"`
-
 	ProblemStmt *string    `json:"problem_stmt,omitempty"`
 	GithubLink  *string    `json:"github_link,omitempty"`
 	FigmaLink   *string    `json:"figma_link,omitempty"`
