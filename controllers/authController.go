@@ -29,7 +29,6 @@ func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.Han
 
 		idToken := parts[1]
 
-		// 2. Verify the Google ID token using Firebase Auth
 		token, err := authClient.VerifyIDToken(context.Background(), idToken)
 		if err != nil {
 			log.Printf("error verifying ID token: %v\n", err)
@@ -37,15 +36,13 @@ func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.Han
 			return
 		}
 
-		// 3. Check if the user's email exists in the 'users' collection in Firestore
-		userEmail := strings.ToLower(token.Claims["email"].(string)) // normalize to lowercase
+		userEmail := strings.ToLower(token.Claims["email"].(string))
 		ctx := context.Background()
 
 		userRef := firestoreClient.Collection("users").Doc(userEmail)
-		doc, err := userRef.Get(ctx)  //get the user document
+		doc, err := userRef.Get(ctx)
 
 		if status.Code(err) == codes.NotFound {
-			// no document found, user is not registered
 			log.Printf("Sign-in failed: email '%s' not found in registrations.", userEmail)
 			http.Error(w, "User has not registered for the event.", http.StatusNoContent)
 			return
@@ -66,7 +63,6 @@ func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.Han
 		}
 		log.Printf("User %s found in Firestore. TeamID: %v", userEmail, TeamID)
 
-		// 5. User is registered and has a user document, sign-in is successful
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]bool{

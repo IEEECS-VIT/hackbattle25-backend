@@ -122,7 +122,6 @@ func getUserNameFromContext(r *http.Request) (string, bool) {
 	return name, ok
 }
 
-// CreateTeam stores leader as member with email+name
 func CreateTeam(w http.ResponseWriter, r *http.Request) {
 	userEmail, ok := getUserEmailFromContext(r)
 	if !ok {
@@ -193,7 +192,6 @@ func CreateTeam(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// JoinTeam adds email+name as a member
 func JoinTeam(w http.ResponseWriter, r *http.Request) {
 	userEmail, ok := getUserEmailFromContext(r)
 	if !ok {
@@ -260,7 +258,6 @@ func JoinTeam(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"message": "User joined team successfully"})
 }
 
-// LeaveTeam removes email+name
 func LeaveTeam(w http.ResponseWriter, r *http.Request) {
 	userEmail, ok := getUserEmailFromContext(r)
 	if !ok {
@@ -310,7 +307,6 @@ func LeaveTeam(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"message": "Successfully left team"})
 }
 
-// RemoveMember removes by email+name
 func RemoveMember(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 
@@ -366,7 +362,6 @@ func RemoveMember(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"message": "Member removed successfully"})
 }
 
-// GetTeam returns members with name+email
 func GetTeam(w http.ResponseWriter, r *http.Request) {
 	log.Println("GetTeam called")
 
@@ -437,7 +432,6 @@ func GetTeam(w http.ResponseWriter, r *http.Request) {
 	log.Println("Response sent successfully")
 }
 
-// DeleteTeam clears members
 func DeleteTeam(w http.ResponseWriter, r *http.Request) {
 	userEmail, ok := getUserEmailFromContext(r)
 	if !ok {
