@@ -145,32 +145,36 @@ func CreateTeam(w http.ResponseWriter, r *http.Request) {
 	userRef := config.FirestoreClient.Collection("users").Doc(userEmail)
 	teamsCollection := config.FirestoreClient.Collection("teams")
 
+	// Check if team name already exists
 	q := teamsCollection.Where("Name", "==", payload.Name).Limit(1)
 	if docs, _ := q.Documents(ctx).GetAll(); len(docs) > 0 {
-		http.Error(w, "This team name is already taken", http.StatusAlreadyReported)
+		http.Error(w, "This team name is already taken", http.StatusConflict)
 		return
 	}
 
 	teamCode, _ := generateTeamCode(ctx, teamsCollection)
+
+	var alreadyInTeam bool
 
 	err := config.FirestoreClient.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		userDoc, err := tx.Get(userRef)
 		if err != nil {
 			return status.Errorf(codes.NotFound, "User profile not found")
 		}
+
 		if teamID, _ := userDoc.DataAt("TeamID"); teamID != nil {
-			return status.Errorf(codes.AlreadyExists, "User is already in a team")
+			alreadyInTeam = true
+			return nil // stop here, don’t create a team
 		}
 
 		newTeamRef := teamsCollection.Doc(teamCode)
-		err = tx.Set(newTeamRef, map[string]interface{}{
+		if err := tx.Set(newTeamRef, map[string]interface{}{
 			"Name":      payload.Name,
 			"Code":      teamCode,
 			"leaderId":  userEmail,
 			"members":   []map[string]interface{}{{"email": userEmail, "name": userName}},
 			"CreatedAt": time.Now(),
-		})
-		if err != nil {
+		}); err != nil {
 			return err
 		}
 
@@ -185,12 +189,20 @@ func CreateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if alreadyInTeam {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"message": "You are already in a team"})
+		return
+	}
+
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "Team created successfully",
 		"code":    teamCode,
 	})
 }
+
+
 
 func JoinTeam(w http.ResponseWriter, r *http.Request) {
 	userEmail, ok := getUserEmailFromContext(r)
@@ -218,7 +230,8 @@ func JoinTeam(w http.ResponseWriter, r *http.Request) {
 			return status.Errorf(codes.NotFound, "User profile not found")
 		}
 		if teamID, _ := userDoc.DataAt("TeamID"); teamID != nil {
-			return status.Errorf(codes.AlreadyExists, "User is already in a team")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"message": "You are already in a team"})
 		}
 
 		teamSnap, err := tx.Get(teamRef)
@@ -232,7 +245,8 @@ func JoinTeam(w http.ResponseWriter, r *http.Request) {
 
 		members, _ := teamSnap.DataAt("members")
 		if len(members.([]interface{})) >= maxTeamSize {
-			return status.Errorf(codes.FailedPrecondition, "Team is already full")
+			w.WriteHeader(http.StatusAlreadyReported)
+			json.NewEncoder(w).Encode(map[string]string{"message": "Team at max size"})	
 		}
 
 		userName, ok := getUserNameFromContext(r)
@@ -424,6 +438,7 @@ func GetTeam(w http.ResponseWriter, r *http.Request) {
 		"other_files":  teamData.OtherFiles,
 		"submitted_at": teamData.SubmittedAt,
 		"updated_at":   teamData.UpdatedAt,
+		"isLeader":    teamData.LeaderID == userEmail,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -483,56 +498,60 @@ type SubmissionPayload struct {
 	ProblemStmt *string  `json:"problem_stmt"`
 	GithubLink  *string  `json:"github_link"`
 	FigmaLink   *string  `json:"figma_link"`
-	OtherFiles  []string `json:"other_files"`
+	OtherFiles  string `json:"other_files"`
 }
 
 func SubmitProject(w http.ResponseWriter, r *http.Request) {
-	ctx := context.Background()
+    ctx := context.Background()
 
-	var payload SubmissionPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-	if payload.ProblemStmt == nil || *payload.ProblemStmt == "" || payload.GithubLink == nil || *payload.GithubLink == "" {
-		http.Error(w, "Problem statement and GitHub link are required", http.StatusBadRequest)
-		return
-	}
+    var payload SubmissionPayload
+    if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+        http.Error(w, "Invalid request body", http.StatusBadRequest)
+        return
+    }
 
-	teamID, err := verifyTeamLeader(ctx, r)
-	if err != nil {
-		handleFirestoreError(w, err)
-		return
-	}
+    if payload.ProblemStmt == nil || *payload.ProblemStmt == "" || payload.GithubLink == nil || *payload.GithubLink == "" {
+        http.Error(w, "Problem statement and GitHub link are required", http.StatusBadRequest)
+        return
+    }
 
-	teamRef := config.FirestoreClient.Collection("teams").Doc(teamID)
-	err = config.FirestoreClient.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
-		doc, err := tx.Get(teamRef)
-		if err != nil {
-			return &httpError{"Team not found", http.StatusNotFound}
-		}
-		if _, err := doc.DataAt("SubmittedAt"); err == nil {
-			return &httpError{"Project has already been submitted", http.StatusConflict}
-		}
+    teamID, err := verifyTeamLeader(ctx, r)
+    if err != nil {
+        handleFirestoreError(w, err)
+        return
+    }
 
-		now := time.Now()
-		return tx.Update(teamRef, []firestore.Update{
-			{Path: "ProblemStmt", Value: payload.ProblemStmt},
-			{Path: "GithubLink", Value: payload.GithubLink},
-			{Path: "FigmaLink", Value: payload.FigmaLink},
-			{Path: "OtherFiles", Value: payload.OtherFiles},
-			{Path: "SubmittedAt", Value: now},
-			{Path: "UpdatedAt", Value: now},
-		})
-	})
+    teamRef := config.FirestoreClient.Collection("teams").Doc(teamID)
+    err = config.FirestoreClient.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+        doc, err := tx.Get(teamRef)
+        if err != nil {
+            return &httpError{"Team not found", http.StatusNotFound}
+        }
 
-	if err != nil {
-		handleFirestoreError(w, err)
-		return
-	}
+        now := time.Now()
+        updates := []firestore.Update{
+            {Path: "ProblemStmt", Value: payload.ProblemStmt},
+            {Path: "GithubLink", Value: payload.GithubLink},
+            {Path: "FigmaLink", Value: payload.FigmaLink},
+            {Path: "OtherFiles", Value: payload.OtherFiles},
+            {Path: "UpdatedAt", Value: now},
+        }
 
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"message": "Project submitted successfully"})
+        // Only set SubmittedAt if it doesn't exist yet
+        if _, err := doc.DataAt("SubmittedAt"); err != nil {
+            updates = append(updates, firestore.Update{Path: "SubmittedAt", Value: now})
+        }
+
+        return tx.Update(teamRef, updates)
+    })
+
+    if err != nil {
+        handleFirestoreError(w, err)
+        return
+    }
+
+    w.WriteHeader(http.StatusOK)
+    json.NewEncoder(w).Encode(map[string]string{"message": "Project submitted/updated successfully"})
 }
 
 func UpdateProject(w http.ResponseWriter, r *http.Request) {
@@ -571,9 +590,8 @@ func UpdateProject(w http.ResponseWriter, r *http.Request) {
 		if payload.FigmaLink != nil {
 			updates = append(updates, firestore.Update{Path: "FigmaLink", Value: *payload.FigmaLink})
 		}
-		if payload.OtherFiles != nil {
-			updates = append(updates, firestore.Update{Path: "OtherFiles", Value: payload.OtherFiles})
-		}
+		updates = append(updates, firestore.Update{Path: "OtherFiles", Value: payload.OtherFiles})
+		
 
 		if len(updates) == 0 {
 			return &httpError{"No update data provided", http.StatusBadRequest}
