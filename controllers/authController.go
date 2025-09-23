@@ -29,7 +29,6 @@ func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.Han
 
 		idToken := parts[1]
 
-		// 2. Verify the Google ID token using Firebase Auth
 		token, err := authClient.VerifyIDToken(context.Background(), idToken)
 		if err != nil {
 			log.Printf("error verifying ID token: %v\n", err)
@@ -37,13 +36,11 @@ func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.Han
 			return
 		}
 
-		// 3. Check if the user's email exists in the 'users' collection in Firestore
-		userEmail := strings.ToLower(token.Claims["email"].(string)) // normalize to lowercase
+		userEmail := strings.ToLower(token.Claims["email"].(string))
 		ctx := context.Background()
 
 		userRef := firestoreClient.Collection("users").Doc(userEmail)
-		doc, err := userRef.Get(ctx)  //get the user document
-
+		doc, err := userRef.Get(ctx)
 		if status.Code(err) == codes.NotFound {
 			log.Printf("Sign-in failed: email '%s' not found in registrations.", userEmail)
 			http.Error(w, "User has not registered for the event.", http.StatusNoContent)
@@ -56,22 +53,33 @@ func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.Han
 		}
 
 		var isInTeam bool = false
-		TeamID , err := doc.DataAt("TeamID")
+		teamIDRaw, err := doc.DataAt("TeamID")
+		var teamID string
 
-		if(err == nil && TeamID != nil){
-			isInTeam = true
-		} else{
-			isInTeam = false
+		if err == nil && teamIDRaw != nil {
+			switch v := teamIDRaw.(type) {
+			case string:
+				teamID = v
+			case *firestore.DocumentRef:
+				teamID = v.ID
+			default:
+				log.Printf("TeamID field type is unexpected: %T", v)
+			}
+			if teamID != "" {
+				isInTeam = true
+			}
+		} else {
+			log.Printf("TeamID is nil or field missing for user: %s", userEmail)
 		}
-		log.Printf("User %s found in Firestore. TeamID: %v", userEmail, TeamID)
 
-		// 5. User is registered and has a user document, sign-in is successful
+		log.Printf("User %s found in Firestore. TeamID: %v", userEmail, teamID)
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]bool{
-			"isInTeam" : isInTeam,
+			"isInTeam": isInTeam,
 		})
 		log.Printf("Successfully signed in user: %s", userEmail)
-
 	}
 }
+
