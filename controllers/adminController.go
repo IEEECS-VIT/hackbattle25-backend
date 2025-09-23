@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/IEEECS-VIT/hackbattle25-backend/config"
 	"github.com/IEEECS-VIT/hackbattle25-backend/models"
@@ -70,7 +71,7 @@ func ExportTeamsToExcel(w http.ResponseWriter, r *http.Request) {
 
 	// Set headers for all fields
 	headers := []string{
-		"Team Name", "Team Code", "Leader ID", "Emails", "Members",
+		"Team Name", "Team Code", "Type", "Leader ID", "Emails", "Names",
 		"Problem Statement", "GitHub Link", "Figma Link", "Other Files",
 		"Submitted At", "Updated At", "Created At",
 	}
@@ -101,41 +102,24 @@ func ExportTeamsToExcel(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		emails := ""
-		if emailArray, ok := doc.Data()["emails"].([]interface{}); ok {
-			for i, item := range emailArray {
-				if emailMap, ok := item.(map[string]interface{}); ok {
-					if email, ok := emailMap["emails"].(string); ok {
-						if i > 0 {
-							emails += ", "
-						}
-						emails += email
+		var emailsSlice []string
+		var namesSlice []string
+
+		if membersArray, ok := doc.Data()["members"].([]interface{}); ok {
+			for _, item := range membersArray {
+				if memberMap, ok := item.(map[string]interface{}); ok {
+					if email, ok := memberMap["email"].(string); ok {
+						emailsSlice = append(emailsSlice, email)
+					}
+					if name, ok := memberMap["name"].(string); ok {
+						namesSlice = append(namesSlice, name)
 					}
 				}
 			}
 		}
 
-		members := ""
-		if memberArray, ok := doc.Data()["members"].([]interface{}); ok {
-			for i, m := range memberArray {
-				if i > 0 {
-					members += ", "
-				}
-				members += fmt.Sprintf("%v", m)
-			}
-		}
-
-		otherFiles := ""
-		if filesArray, ok := doc.Data()["OtherFiles"].([]interface{}); ok {
-			for i, f := range filesArray {
-				if file, ok := f.(string); ok {
-					if i > 0 {
-						otherFiles += ", "
-					}
-					otherFiles += file
-				}
-			}
-		}
+		emails := strings.Join(emailsSlice, ", ")
+		names := strings.Join(namesSlice, ", ")
 
 		problemStmt := ""
 		if team.ProblemStmt != nil {
@@ -149,6 +133,10 @@ func ExportTeamsToExcel(w http.ResponseWriter, r *http.Request) {
 		if team.FigmaLink != nil {
 			figmaLink = *team.FigmaLink
 		}
+		otherFiles := ""
+		if team.OtherFiles != nil {
+			otherFiles = *team.OtherFiles
+		}
 		submittedAt := ""
 		if team.SubmittedAt != nil {
 			submittedAt = team.SubmittedAt.Format("2006-01-02 15:04:05")
@@ -159,12 +147,18 @@ func ExportTeamsToExcel(w http.ResponseWriter, r *http.Request) {
 		}
 		createdAt := team.CreatedAt.Format("2006-01-02 15:04:05")
 
+		teamType := "Internal"
+		if strings.Split(team.LeaderID, "@")[1] != "vitstudent.ac.in" {
+			teamType = "External"
+		}
+
 		rowData := []interface{}{
 			team.Name,
 			team.Code,
+			teamType,
 			team.LeaderID,
 			emails,
-			members,
+			names,
 			problemStmt,
 			githubLink,
 			figmaLink,
