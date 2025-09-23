@@ -220,6 +220,7 @@ func JoinTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	req.TeamCode = strings.ToUpper(req.TeamCode)
 	ctx := context.Background()
 	userRef := config.FirestoreClient.Collection("users").Doc(userEmail)
 	teamRef := config.FirestoreClient.Collection("teams").Doc(req.TeamCode)
