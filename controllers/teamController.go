@@ -324,12 +324,12 @@ func LeaveOrDeleteTeam(w http.ResponseWriter, r *http.Request) {
 		members := membersData.([]interface{})
 
 		// Get user's name from their user document for the ArrayRemove operation
-		userName := userDoc.Data()["Name"]
+		userName := userDoc.Data()["name"]
 		if userName == nil {
 			// Handle case where user name is missing, though this shouldn't happen
 			return status.Errorf(codes.Internal, "User name not found in user document")
 		}
-
+		log.Printf("IsLead: %v\n", IsLead)
 		// Logic for a Team Leader
 		if IsLead {
 			if len(members) > 1 {
@@ -375,7 +375,7 @@ func LeaveOrDeleteTeam(w http.ResponseWriter, r *http.Request) {
 
 				// Update the original leader's user document
 				return tx.Update(userRef, []firestore.Update{
-					{Path: "TeamID", Value: fireStore.Delete},
+					{Path: "TeamID", Value: firestore.Delete},
 					{Path: "IsLead", Value: firestore.Delete},
 				})
 			} else {
@@ -386,7 +386,7 @@ func LeaveOrDeleteTeam(w http.ResponseWriter, r *http.Request) {
 
 				// Update the leader's user document
 				return tx.Update(userRef, []firestore.Update{
-					{Path: "TeamID", Value: fireStore.Delete},
+					{Path: "TeamID", Value: firestore.Delete},
 					{Path: "IsLead", Value: firestore.Delete},
 				})
 			}

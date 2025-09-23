@@ -31,19 +31,28 @@ func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.Han
 
 		token, err := authClient.VerifyIDToken(context.Background(), idToken)
 		if err != nil {
-			log.Printf("error verifying ID token: %v\n", err)
+			log.Printf("Error verifying ID token: %v", err)
 			http.Error(w, "Invalid or expired token", http.StatusUnauthorized)
 			return
 		}
 
-		userEmail := strings.ToLower(token.Claims["email"].(string))
-		ctx := context.Background()
+		emailRaw, ok := token.Claims["email"]
+		if !ok {
+			http.Error(w, "Token missing email claim", http.StatusUnauthorized)
+			return
+		}
+		userEmail, ok := emailRaw.(string)
+		if !ok || userEmail == "" {
+			http.Error(w, "Token email claim is invalid", http.StatusUnauthorized)
+			return
+		}
+		userEmail = strings.ToLower(userEmail)
 
+		ctx := context.Background()
 		userRef := firestoreClient.Collection("users").Doc(userEmail)
 		doc, err := userRef.Get(ctx)
 		if status.Code(err) == codes.NotFound {
-			log.Printf("Sign-in failed: email '%s' not found in registrations.", userEmail)
-			http.Error(w, "User has not registered for the event.", http.StatusNoContent)
+			http.Error(w, "User has not registered for the event.", http.StatusNotFound)
 			return
 		}
 		if err != nil {
@@ -52,10 +61,9 @@ func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.Han
 			return
 		}
 
-		var isInTeam bool = false
+		isInTeam := false
 		teamIDRaw, err := doc.DataAt("TeamID")
 		var teamID string
-
 		if err == nil && teamIDRaw != nil {
 			switch v := teamIDRaw.(type) {
 			case string:
@@ -63,23 +71,19 @@ func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.Han
 			case *firestore.DocumentRef:
 				teamID = v.ID
 			default:
-				log.Printf("TeamID field type is unexpected: %T", v)
+				log.Printf("Unexpected TeamID type: %T", v)
 			}
 			if teamID != "" {
 				isInTeam = true
 			}
-		} else {
-			log.Printf("TeamID is nil or field missing for user: %s", userEmail)
 		}
-
-		log.Printf("User %s found in Firestore. TeamID: %v", userEmail, teamID)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]bool{
 			"isInTeam": isInTeam,
 		})
-		log.Printf("Successfully signed in user: %s", userEmail)
 	}
 }
+
 
