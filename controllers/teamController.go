@@ -273,6 +273,128 @@ func JoinTeam(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"message": "User joined team successfully"})
 }
 
+func LeaveOrDeleteTeam(w http.ResponseWriter, r *http.Request) {
+	userEmail, ok := getUserEmailFromContext(r)
+	if !ok {
+		http.Error(w, "Invalid token: missing email", http.StatusUnauthorized)
+		return
+	}
+
+	ctx := context.Background()
+	userRef := config.FirestoreClient.Collection("users").Doc(userEmail)
+	var teamID string
+
+	// Use a transaction to ensure atomicity
+	err := config.FirestoreClient.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		userDoc, err := tx.Get(userRef)
+		if err != nil {
+			return status.Errorf(codes.NotFound, "User profile not found")
+		}
+
+		// Get user's TeamID and check if they are in a team
+		teamIDData, _ := userDoc.DataAt("TeamID")
+		if teamIDData == nil {
+			return status.Errorf(codes.FailedPrecondition, "User is not in a team")
+		}
+		teamID = teamIDData.(string)
+
+		// Get user's IsLead status
+		isLeadData, _ := userDoc.DataAt("IsLead")
+		isLead := false
+		if lead, ok := isLeadData.(bool); ok {
+			isLead = lead
+		}
+
+		teamRef := config.FirestoreClient.Collection("teams").Doc(teamID)
+		teamDoc, err := tx.Get(teamRef)
+		if err != nil {
+			return status.Errorf(codes.NotFound, "Team not found")
+		}
+
+		membersData, _ := teamDoc.DataAt("members")
+		members := membersData.([]interface{})
+
+		// Get user's name from their user document for the ArrayRemove operation
+		userName := userDoc.Data()["name"]
+		if userName == nil {
+			// Handle case where user name is missing, though this shouldn't happen
+			return status.Errorf(codes.Internal, "User name not found in user document")
+		}
+
+		// Logic for a Team Leader
+		if isLead {
+			if len(members) > 1 {
+				// Transfer leadership to the next member
+				var newLeadEmail string
+				for _, member := range members {
+					memberMap := member.(map[string]interface{})
+					if memberMap["email"].(string) != userEmail {
+						newLeadEmail = memberMap["email"].(string)
+						break
+					}
+				}
+
+				if newLeadEmail == "" {
+					return status.Errorf(codes.Internal, "Could not find a new leader.")
+				}
+
+				newLeaderRef := config.FirestoreClient.Collection("users").Doc(newLeadEmail)
+				if err := tx.Update(newLeaderRef, []firestore.Update{{Path: "IsLead", Value: true}}); err != nil {
+					return err
+				}
+
+				if err := tx.Update(teamRef, []firestore.Update{{Path: "leaderId", Value: newLeadEmail}}); err != nil {
+					return err
+				}
+
+				// Remove leader from team members list
+				if err := tx.Update(teamRef, []firestore.Update{{Path: "members", Value: firestore.ArrayRemove(map[string]interface{}{"email": userEmail, "name": userName})}}); err != nil {
+					return err
+				}
+
+				// Update the original leader's user document
+				return tx.Update(userRef, []firestore.Update{
+					{Path: "TeamID", Value: nil},
+					{Path: "IsLead", Value: false},
+				})
+			} else {
+				// The leader is the only one left, so delete the team
+				if err := tx.Delete(teamRef); err != nil {
+					return err
+				}
+
+				// Update the leader's user document
+				return tx.Update(userRef, []firestore.Update{
+					{Path: "TeamID", Value: nil},
+					{Path: "IsLead", Value: false},
+				})
+			}
+		}
+
+		// Logic for a regular Team Member
+		// This is the code block that is executed when a regular member leaves.
+		teamUpdates := []firestore.Update{
+			{Path: "members", Value: firestore.ArrayRemove(map[string]interface{}{"email": userEmail, "name": userName})},
+		}
+		if err := tx.Update(teamRef, teamUpdates); err != nil {
+			return err
+		}
+
+		return tx.Update(userRef, []firestore.Update{
+			{Path: "TeamID", Value: nil},
+			{Path: "IsLead", Value: firestore.Delete},
+		})
+	})
+
+	if err != nil {
+		handleFirestoreError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"message": "Action completed successfully"})
+}
+
 // LeaveTeam removes email+name
 func LeaveTeam(w http.ResponseWriter, r *http.Request) {
 	userEmail, ok := getUserEmailFromContext(r)
