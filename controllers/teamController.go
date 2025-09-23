@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 	"log"
-
+	
 	"cloud.google.com/go/firestore"
 	"firebase.google.com/go/v4/auth"
 	"github.com/IEEECS-VIT/hackbattle25-backend/config"
@@ -296,7 +296,17 @@ func LeaveOrDeleteTeam(w http.ResponseWriter, r *http.Request) {
 		if teamIDData == nil {
 			return status.Errorf(codes.FailedPrecondition, "User is not in a team")
 		}
-		teamID = teamIDData.(string)
+
+		// safely extract teamID
+		switch v := teamIDData.(type) {
+		case string:
+			teamID = v
+		case *firestore.DocumentRef:
+			teamID = v.ID
+		default:
+			return status.Errorf(codes.Internal, "TeamID field is invalid")
+		}
+
 
 		// Get user's IsLead status
 		isLeadData, _ := userDoc.DataAt("IsLead")
@@ -310,7 +320,6 @@ func LeaveOrDeleteTeam(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return status.Errorf(codes.NotFound, "Team not found")
 		}
-
 		membersData, _ := teamDoc.DataAt("members")
 		members := membersData.([]interface{})
 
@@ -348,9 +357,21 @@ func LeaveOrDeleteTeam(w http.ResponseWriter, r *http.Request) {
 				}
 
 				// Remove leader from team members list
-				if err := tx.Update(teamRef, []firestore.Update{{Path: "members", Value: firestore.ArrayRemove(map[string]interface{}{"email": userEmail, "name": userName})}}); err != nil {
+				// Remove leaving leader manually
+				newMembers := []interface{}{}
+				for _, member := range members {
+					memberMap := member.(map[string]interface{})
+					if memberMap["email"].(string) != userEmail {
+						newMembers = append(newMembers, memberMap)
+					}
+				}
+
+				if err := tx.Update(teamRef, []firestore.Update{
+					{Path: "members", Value: newMembers},
+				}); err != nil {
 					return err
 				}
+
 
 				// Update the original leader's user document
 				return tx.Update(userRef, []firestore.Update{
@@ -373,12 +394,20 @@ func LeaveOrDeleteTeam(w http.ResponseWriter, r *http.Request) {
 
 		// Logic for a regular Team Member
 		// This is the code block that is executed when a regular member leaves.
-		teamUpdates := []firestore.Update{
-			{Path: "members", Value: firestore.ArrayRemove(map[string]interface{}{"email": userEmail, "name": userName})},
+		// Remove leaving user manually
+		newMembers := []interface{}{}
+		for _, member := range members {
+			memberMap := member.(map[string]interface{})
+			if memberMap["email"].(string) != userEmail {
+				newMembers = append(newMembers, memberMap)
+			}
 		}
-		if err := tx.Update(teamRef, teamUpdates); err != nil {
+		if err := tx.Update(teamRef, []firestore.Update{
+			{Path: "members", Value: newMembers},
+		}); err != nil {
 			return err
 		}
+
 
 		return tx.Update(userRef, []firestore.Update{
 			{Path: "TeamID", Value: nil},
@@ -526,7 +555,7 @@ func GetTeam(w http.ResponseWriter, r *http.Request) {
 	teamIDValue, _ := userDoc.DataAt("TeamID")
 	if teamIDValue == nil {
 		log.Println("User is not part of any team")
-		w.WriteHeader(http.StatusNotFound)
+		w.WriteHeader(http.StatusNoContent)
 		json.NewEncoder(w).Encode(map[string]string{"message": "User is not part of any team"})
 		return
 	}
