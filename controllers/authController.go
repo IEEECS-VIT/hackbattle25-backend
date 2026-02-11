@@ -6,12 +6,12 @@ import (
 	"log"
 	"net/http"
 	"strings"
+
 	"cloud.google.com/go/firestore"
 	"firebase.google.com/go/v4/auth"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
-
 
 func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -50,31 +50,46 @@ func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.Han
 
 		ctx := context.Background()
 		userRef := firestoreClient.Collection("users").Doc(userEmail)
+
 		doc, err := userRef.Get(ctx)
+		isInTeam := false
+
 		if status.Code(err) == codes.NotFound {
-			http.Error(w, "User has not registered for the event.", http.StatusNotFound)
-			return
-		}
-		if err != nil {
+			userName := ""
+			if name, ok := token.Claims["name"].(string); ok {
+				userName = name
+			}
+
+			_, err = userRef.Set(ctx, map[string]interface{}{
+				"email":  userEmail,
+				"Name":   userName,
+				"TeamID": nil,
+				"IsLead": false,
+			})
+			if err != nil {
+				log.Printf("Error creating user: %v", err)
+				http.Error(w, "Failed to register user", http.StatusInternalServerError)
+				return
+			}
+		} else if err != nil {
 			log.Printf("Error checking Firestore: %v", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
-		}
-
-		isInTeam := false
-		teamIDRaw, err := doc.DataAt("TeamID")
-		var teamID string
-		if err == nil && teamIDRaw != nil {
-			switch v := teamIDRaw.(type) {
-			case string:
-				teamID = v
-			case *firestore.DocumentRef:
-				teamID = v.ID
-			default:
-				log.Printf("Unexpected TeamID type: %T", v)
-			}
-			if teamID != "" {
-				isInTeam = true
+		} else {
+			teamIDRaw, err := doc.DataAt("TeamID")
+			var teamID string
+			if err == nil && teamIDRaw != nil {
+				switch v := teamIDRaw.(type) {
+				case string:
+					teamID = v
+				case *firestore.DocumentRef:
+					teamID = v.ID
+				default:
+					log.Printf("Unexpected TeamID type: %T", v)
+				}
+				if teamID != "" {
+					isInTeam = true
+				}
 			}
 		}
 
@@ -85,5 +100,3 @@ func SignIn(authClient *auth.Client, firestoreClient *firestore.Client) http.Han
 		})
 	}
 }
-
-
