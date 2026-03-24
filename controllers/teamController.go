@@ -22,7 +22,7 @@ type TeamPayload struct {
 	Name string `json:"name"`
 }
 
-const maxTeamSize = 5
+const maxTeamSize = 4
 
 type httpError struct {
 	message string
