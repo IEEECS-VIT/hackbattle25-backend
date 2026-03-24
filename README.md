@@ -22,9 +22,21 @@ This is the backend service for our awesome project.
     ```
 
 ## Running the Server
-Set the environment variable with the path to your key and run the `main.go` file.
+Set environment variables and run `main.go`.
 
 ```bash
-export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/serviceAccountKey.json" && go run main.go
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/serviceAccountKey.json"
+export ALLOWED_ORIGINS="http://localhost:3000,https://your-frontend.example.com"
+go run main.go
 ```
-The server will be running on `http://localhost:8080`. 🚀
+
+PowerShell:
+```powershell
+$env:GOOGLE_APPLICATION_CREDENTIALS="C:\path\to\serviceAccountKey.json"
+$env:ALLOWED_ORIGINS="http://localhost:3000,https://your-frontend.example.com"
+go run main.go
+```
+
+`ALLOWED_ORIGINS` must be a comma-separated list of origins.
+
+The server will be running on `http://localhost:8081`.
