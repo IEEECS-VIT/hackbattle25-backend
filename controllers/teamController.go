@@ -3,12 +3,12 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"math/rand"
 	"net/http"
 	"strings"
 	"time"
-	"log"
-	
+
 	"cloud.google.com/go/firestore"
 	"firebase.google.com/go/v4/auth"
 	"github.com/IEEECS-VIT/hackbattle25-backend/config"
@@ -33,22 +33,97 @@ func (e *httpError) Error() string {
 	return e.message
 }
 
+func writeJSON(w http.ResponseWriter, statusCode int, payload interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		log.Printf("error writing JSON response: %v", err)
+	}
+}
+
+func writeJSONError(w http.ResponseWriter, statusCode int, message string) {
+	writeJSON(w, statusCode, map[string]string{"message": message})
+}
+
 func handleFirestoreError(w http.ResponseWriter, err error) {
 	if e, ok := err.(*httpError); ok {
-		http.Error(w, e.message, e.code)
+		writeJSONError(w, e.code, e.message)
 		return
 	}
 	st := status.Convert(err)
 	switch st.Code() {
 	case codes.NotFound:
-		http.Error(w, st.Message(), http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, st.Message())
 	case codes.AlreadyExists:
-		http.Error(w, st.Message(), http.StatusConflict)
+		writeJSONError(w, http.StatusConflict, st.Message())
 	case codes.FailedPrecondition:
-		http.Error(w, st.Message(), http.StatusForbidden)
+		writeJSONError(w, http.StatusConflict, st.Message())
+	case codes.InvalidArgument:
+		writeJSONError(w, http.StatusBadRequest, st.Message())
+	case codes.PermissionDenied:
+		writeJSONError(w, http.StatusForbidden, st.Message())
 	default:
-		http.Error(w, "An unexpected error occurred: "+st.Message(), http.StatusInternalServerError)
+		log.Printf("unexpected Firestore error: code=%s message=%s", st.Code(), st.Message())
+		writeJSONError(w, http.StatusInternalServerError, "An unexpected error occurred")
 	}
+}
+
+func normalizeTeamID(teamIDData interface{}) (string, error) {
+	switch v := teamIDData.(type) {
+	case string:
+		teamID := strings.TrimSpace(v)
+		if teamID == "" {
+			return "", status.Errorf(codes.Internal, "TeamID is empty")
+		}
+		return teamID, nil
+	case *firestore.DocumentRef:
+		if v == nil || strings.TrimSpace(v.ID) == "" {
+			return "", status.Errorf(codes.Internal, "TeamID is empty")
+		}
+		return v.ID, nil
+	default:
+		return "", status.Errorf(codes.Internal, "TeamID field is invalid")
+	}
+}
+
+func extractMembers(teamDoc *firestore.DocumentSnapshot) ([]map[string]interface{}, error) {
+	membersData, err := teamDoc.DataAt("members")
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return []map[string]interface{}{}, nil
+		}
+		return nil, status.Errorf(codes.Internal, "Failed to read team members")
+	}
+
+	rawMembers, ok := membersData.([]interface{})
+	if !ok {
+		return nil, status.Errorf(codes.Internal, "Team members field has invalid format")
+	}
+
+	members := make([]map[string]interface{}, 0, len(rawMembers))
+	for _, member := range rawMembers {
+		memberMap, ok := member.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		email, ok := memberMap["email"].(string)
+		if !ok {
+			continue
+		}
+		email = strings.TrimSpace(strings.ToLower(email))
+		if email == "" {
+			continue
+		}
+
+		normalizedMember := map[string]interface{}{"email": email}
+		if name, ok := memberMap["name"].(string); ok && strings.TrimSpace(name) != "" {
+			normalizedMember["name"] = name
+		}
+		members = append(members, normalizedMember)
+	}
+
+	return members, nil
 }
 
 func getUserEmailFromContext(r *http.Request) (string, bool) {
@@ -74,17 +149,23 @@ func verifyTeamLeader(ctx context.Context, r *http.Request) (string, error) {
 		return "", &httpError{"User profile not found", http.StatusNotFound}
 	}
 
-	isLead, err := userDoc.DataAt("IsLead")
-	if err != nil || !isLead.(bool) {
+	isLeadData, err := userDoc.DataAt("IsLead")
+	isLead, leadOK := isLeadData.(bool)
+	if err != nil || !leadOK || !isLead {
 		return "", &httpError{"User is not a team leader", http.StatusForbidden}
 	}
 
-	teamID, err := userDoc.DataAt("TeamID")
+	teamIDData, err := userDoc.DataAt("TeamID")
 	if err != nil {
 		return "", &httpError{"Team ID not found for leader", http.StatusInternalServerError}
 	}
 
-	return teamID.(string), nil
+	teamID, err := normalizeTeamID(teamIDData)
+	if err != nil {
+		return "", &httpError{"Team ID not found for leader", http.StatusInternalServerError}
+	}
+
+	return teamID, nil
 }
 
 func generateTeamCode(ctx context.Context, teamsCollection *firestore.CollectionRef) (string, error) {
@@ -202,7 +283,6 @@ func CreateTeam(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-
 // JoinTeam adds email+name as a member
 func JoinTeam(w http.ResponseWriter, r *http.Request) {
 	userEmail, ok := getUserEmailFromContext(r)
@@ -231,23 +311,23 @@ func JoinTeam(w http.ResponseWriter, r *http.Request) {
 			return status.Errorf(codes.NotFound, "User profile not found")
 		}
 		if teamID, _ := userDoc.DataAt("TeamID"); teamID != nil {
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{"message": "You are already in a team"})
+			return status.Errorf(codes.FailedPrecondition, "You are already in a team")
 		}
 
 		teamSnap, err := tx.Get(teamRef)
 		if err != nil {
 			if status.Code(err) == codes.NotFound {
-				w.WriteHeader(http.StatusNoContent)
-				json.NewEncoder(w).Encode(map[string]string{"message": "Team with that code not found"})
+				return status.Errorf(codes.NotFound, "Team with that code not found")
 			}
 			return err
 		}
 
-		members, _ := teamSnap.DataAt("members")
-		if len(members.([]interface{})) >= maxTeamSize {
-			w.WriteHeader(http.StatusAlreadyReported)
-			json.NewEncoder(w).Encode(map[string]string{"message": "Team at max size"})	
+		members, err := extractMembers(teamSnap)
+		if err != nil {
+			return err
+		}
+		if len(members) >= maxTeamSize {
+			return status.Errorf(codes.FailedPrecondition, "Team at max size")
 		}
 
 		userName, ok := getUserNameFromContext(r)
@@ -276,7 +356,7 @@ func JoinTeam(w http.ResponseWriter, r *http.Request) {
 func LeaveOrDeleteTeam(w http.ResponseWriter, r *http.Request) {
 	userEmail, ok := getUserEmailFromContext(r)
 	if !ok {
-		http.Error(w, "Invalid token: missing email", http.StatusUnauthorized)
+		writeJSONError(w, http.StatusUnauthorized, "Invalid token: missing email")
 		return
 	}
 
@@ -297,121 +377,79 @@ func LeaveOrDeleteTeam(w http.ResponseWriter, r *http.Request) {
 			return status.Errorf(codes.FailedPrecondition, "User is not in a team")
 		}
 
-		// safely extract teamID
-		switch v := teamIDData.(type) {
-		case string:
-			teamID = v
-		case *firestore.DocumentRef:
-			teamID = v.ID
-		default:
-			return status.Errorf(codes.Internal, "TeamID field is invalid")
+		teamID, err = normalizeTeamID(teamIDData)
+		if err != nil {
+			return err
 		}
 
-
 		// Get user's IsLead status
-		IsLeadData, _ := userDoc.DataAt("IsLead")
-		IsLead := false
-		if lead, ok := IsLeadData.(bool); ok {
-			IsLead = lead
+		isLeadData, _ := userDoc.DataAt("IsLead")
+		isLead := false
+		if lead, ok := isLeadData.(bool); ok {
+			isLead = lead
 		}
 
 		teamRef := config.FirestoreClient.Collection("teams").Doc(teamID)
 		teamDoc, err := tx.Get(teamRef)
 		if err != nil {
-			return status.Errorf(codes.NotFound, "Team not found")
+			if status.Code(err) == codes.NotFound {
+				// Self-heal stale user membership if team was deleted out of band.
+				return tx.Update(userRef, []firestore.Update{
+					{Path: "TeamID", Value: nil},
+					{Path: "IsLead", Value: false},
+				})
+			}
+			return err
 		}
-		membersData, _ := teamDoc.DataAt("members")
-		members := membersData.([]interface{})
 
-		// Get user's name from their user document for the ArrayRemove operation
-		userName := userDoc.Data()["name"]
-		if userName == nil {
-			// Handle case where user name is missing, though this shouldn't happen
-			return status.Errorf(codes.Internal, "User name not found in user document")
+		members, err := extractMembers(teamDoc)
+		if err != nil {
+			return err
 		}
-		log.Printf("IsLead: %v\n", IsLead)
-		// Logic for a Team Leader
-		if IsLead {
-			if len(members) > 1 {
-				// Transfer leadership to the next member
-				var newLeadEmail string
-				for _, member := range members {
-					memberMap := member.(map[string]interface{})
-					if memberMap["email"].(string) != userEmail {
-						newLeadEmail = memberMap["email"].(string)
-						break
-					}
-				}
 
-				if newLeadEmail == "" {
-					return status.Errorf(codes.Internal, "Could not find a new leader.")
-				}
+		remainingMembers := make([]map[string]interface{}, 0, len(members))
+		userFoundInMembers := false
+		for _, member := range members {
+			email := member["email"].(string)
+			if email == userEmail {
+				userFoundInMembers = true
+				continue
+			}
+			remainingMembers = append(remainingMembers, member)
+		}
 
+		if isLead {
+			log.Printf("Team leader leaving team %s", teamID)
+			if len(remainingMembers) == 0 {
+				if err := tx.Delete(teamRef); err != nil {
+					return err
+				}
+			} else {
+				newLeadEmail := remainingMembers[0]["email"].(string)
 				newLeaderRef := config.FirestoreClient.Collection("users").Doc(newLeadEmail)
 				if err := tx.Update(newLeaderRef, []firestore.Update{{Path: "IsLead", Value: true}}); err != nil {
 					return err
 				}
 
-				if err := tx.Update(teamRef, []firestore.Update{{Path: "leaderId", Value: newLeadEmail}}); err != nil {
-					return err
-				}
-
-				// Remove leader from team members list
-				// Remove leaving leader manually
-				newMembers := []interface{}{}
-				for _, member := range members {
-					memberMap := member.(map[string]interface{})
-					if memberMap["email"].(string) != userEmail {
-						newMembers = append(newMembers, memberMap)
-					}
-				}
-
 				if err := tx.Update(teamRef, []firestore.Update{
-					{Path: "members", Value: newMembers},
+					{Path: "leaderId", Value: newLeadEmail},
+					{Path: "members", Value: remainingMembers},
 				}); err != nil {
 					return err
 				}
-
-
-				// Update the original leader's user document
-				return tx.Update(userRef, []firestore.Update{
-					{Path: "TeamID", Value: firestore.Delete},
-					{Path: "IsLead", Value: firestore.Delete},
-				})
-			} else {
-				// The leader is the only one left, so delete the team
-				if err := tx.Delete(teamRef); err != nil {
-					return err
-				}
-
-				// Update the leader's user document
-				return tx.Update(userRef, []firestore.Update{
-					{Path: "TeamID", Value: firestore.Delete},
-					{Path: "IsLead", Value: firestore.Delete},
-				})
+			}
+		} else if userFoundInMembers {
+			// Regular member: only rewrite members if user was present.
+			if err := tx.Update(teamRef, []firestore.Update{
+				{Path: "members", Value: remainingMembers},
+			}); err != nil {
+				return err
 			}
 		}
-
-		// Logic for a regular Team Member
-		// This is the code block that is executed when a regular member leaves.
-		// Remove leaving user manually
-		newMembers := []interface{}{}
-		for _, member := range members {
-			memberMap := member.(map[string]interface{})
-			if memberMap["email"].(string) != userEmail {
-				newMembers = append(newMembers, memberMap)
-			}
-		}
-		if err := tx.Update(teamRef, []firestore.Update{
-			{Path: "members", Value: newMembers},
-		}); err != nil {
-			return err
-		}
-
 
 		return tx.Update(userRef, []firestore.Update{
 			{Path: "TeamID", Value: nil},
-			{Path: "IsLead", Value: firestore.Delete},
+			{Path: "IsLead", Value: false},
 		})
 	})
 
@@ -420,8 +458,10 @@ func LeaveOrDeleteTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"message": "Action completed successfully"})
+	writeJSON(w, http.StatusOK, map[string]string{
+		"message": "Action completed successfully",
+		"teamID":  teamID,
+	})
 }
 
 // LeaveTeam removes email+name
@@ -559,7 +599,12 @@ func GetTeam(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"message": "User is not part of any team"})
 		return
 	}
-	teamID := teamIDValue.(string)
+	teamID, err := normalizeTeamID(teamIDValue)
+	if err != nil {
+		log.Println("Invalid TeamID in user document:", err)
+		handleFirestoreError(w, err)
+		return
+	}
 	log.Println("Team ID:", teamID)
 
 	teamDoc, err := config.FirestoreClient.Collection("teams").Doc(teamID).Get(ctx)
@@ -593,7 +638,7 @@ func GetTeam(w http.ResponseWriter, r *http.Request) {
 		"other_files":  teamData.OtherFiles,
 		"submitted_at": teamData.SubmittedAt,
 		"updated_at":   teamData.UpdatedAt,
-		"isLeader":    teamData.LeaderID == userEmail,
+		"isLeader":     teamData.LeaderID == userEmail,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -626,8 +671,11 @@ func DeleteTeam(w http.ResponseWriter, r *http.Request) {
 			return &httpError{"Team not found", http.StatusNotFound}
 		}
 
-		members, _ := teamDoc.DataAt("members")
-		if len(members.([]interface{})) > 1 {
+		members, err := extractMembers(teamDoc)
+		if err != nil {
+			return err
+		}
+		if len(members) > 1 {
 			return &httpError{"You must remove all other members before deleting the team", http.StatusForbidden}
 		}
 
@@ -651,63 +699,63 @@ func DeleteTeam(w http.ResponseWriter, r *http.Request) {
 }
 
 type SubmissionPayload struct {
-	ProblemStmt *string  `json:"problem_stmt"`
-	GithubLink  *string  `json:"github_link"`
-	FigmaLink   *string  `json:"figma_link"`
-	OtherFiles  string `json:"other_files"`
+	ProblemStmt *string `json:"problem_stmt"`
+	GithubLink  *string `json:"github_link"`
+	FigmaLink   *string `json:"figma_link"`
+	OtherFiles  string  `json:"other_files"`
 }
 
 func SubmitProject(w http.ResponseWriter, r *http.Request) {
-    ctx := context.Background()
+	ctx := context.Background()
 
-    var payload SubmissionPayload
-    if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-        http.Error(w, "Invalid request body", http.StatusBadRequest)
-        return
-    }
+	var payload SubmissionPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
 
-    if payload.ProblemStmt == nil || *payload.ProblemStmt == "" || payload.GithubLink == nil || *payload.GithubLink == "" {
-        http.Error(w, "Problem statement and GitHub link are required", http.StatusBadRequest)
-        return
-    }
+	if payload.ProblemStmt == nil || *payload.ProblemStmt == "" || payload.GithubLink == nil || *payload.GithubLink == "" {
+		http.Error(w, "Problem statement and GitHub link are required", http.StatusBadRequest)
+		return
+	}
 
-    teamID, err := verifyTeamLeader(ctx, r)
-    if err != nil {
-        handleFirestoreError(w, err)
-        return
-    }
+	teamID, err := verifyTeamLeader(ctx, r)
+	if err != nil {
+		handleFirestoreError(w, err)
+		return
+	}
 
-    teamRef := config.FirestoreClient.Collection("teams").Doc(teamID)
-    err = config.FirestoreClient.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
-        doc, err := tx.Get(teamRef)
-        if err != nil {
-            return &httpError{"Team not found", http.StatusNotFound}
-        }
+	teamRef := config.FirestoreClient.Collection("teams").Doc(teamID)
+	err = config.FirestoreClient.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		doc, err := tx.Get(teamRef)
+		if err != nil {
+			return &httpError{"Team not found", http.StatusNotFound}
+		}
 
-        now := time.Now()
-        updates := []firestore.Update{
-            {Path: "ProblemStmt", Value: payload.ProblemStmt},
-            {Path: "GithubLink", Value: payload.GithubLink},
-            {Path: "FigmaLink", Value: payload.FigmaLink},
-            {Path: "OtherFiles", Value: payload.OtherFiles},
-            {Path: "UpdatedAt", Value: now},
-        }
+		now := time.Now()
+		updates := []firestore.Update{
+			{Path: "ProblemStmt", Value: payload.ProblemStmt},
+			{Path: "GithubLink", Value: payload.GithubLink},
+			{Path: "FigmaLink", Value: payload.FigmaLink},
+			{Path: "OtherFiles", Value: payload.OtherFiles},
+			{Path: "UpdatedAt", Value: now},
+		}
 
-        // Only set SubmittedAt if it doesn't exist yet
-        if _, err := doc.DataAt("SubmittedAt"); err != nil {
-            updates = append(updates, firestore.Update{Path: "SubmittedAt", Value: now})
-        }
+		// Only set SubmittedAt if it doesn't exist yet
+		if _, err := doc.DataAt("SubmittedAt"); err != nil {
+			updates = append(updates, firestore.Update{Path: "SubmittedAt", Value: now})
+		}
 
-        return tx.Update(teamRef, updates)
-    })
+		return tx.Update(teamRef, updates)
+	})
 
-    if err != nil {
-        handleFirestoreError(w, err)
-        return
-    }
+	if err != nil {
+		handleFirestoreError(w, err)
+		return
+	}
 
-    w.WriteHeader(http.StatusOK)
-    json.NewEncoder(w).Encode(map[string]string{"message": "Project submitted/updated successfully"})
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"message": "Project submitted/updated successfully"})
 }
 
 func UpdateProject(w http.ResponseWriter, r *http.Request) {
@@ -747,7 +795,6 @@ func UpdateProject(w http.ResponseWriter, r *http.Request) {
 			updates = append(updates, firestore.Update{Path: "FigmaLink", Value: *payload.FigmaLink})
 		}
 		updates = append(updates, firestore.Update{Path: "OtherFiles", Value: payload.OtherFiles})
-		
 
 		if len(updates) == 0 {
 			return &httpError{"No update data provided", http.StatusBadRequest}
