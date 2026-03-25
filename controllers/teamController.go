@@ -285,6 +285,8 @@ func CreateTeam(w http.ResponseWriter, r *http.Request) {
 
 // JoinTeam adds email+name as a member
 func JoinTeam(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
 	userEmail, ok := getUserEmailFromContext(r)
 	if !ok {
 		http.Error(w, "Invalid token: missing email", http.StatusUnauthorized)
@@ -295,13 +297,13 @@ func JoinTeam(w http.ResponseWriter, r *http.Request) {
 		TeamCode string `json:"team_code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.TeamCode == "" {
-		w.WriteHeader(http.StatusNoContent)
+		w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"message": "Invalid or missing team code"})
 		return
 	}
 
 	req.TeamCode = strings.ToUpper(req.TeamCode)
-	ctx := context.Background()
 	userRef := config.FirestoreClient.Collection("users").Doc(userEmail)
 	teamRef := config.FirestoreClient.Collection("teams").Doc(req.TeamCode)
 
@@ -310,9 +312,11 @@ func JoinTeam(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return status.Errorf(codes.NotFound, "User profile not found")
 		}
-		if teamID, _ := userDoc.DataAt("TeamID"); teamID != nil {
-			return status.Errorf(codes.FailedPrecondition, "You are already in a team")
-		}
+		if teamID, err := userDoc.DataAt("TeamID"); err == nil {
+            if strID, ok := teamID.(string); ok && strID != "" {
+                return status.Errorf(codes.FailedPrecondition, "You are already in a team")
+            }
+        }
 
 		teamSnap, err := tx.Get(teamRef)
 		if err != nil {
@@ -326,6 +330,13 @@ func JoinTeam(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+
+        for _, m := range members {
+            if m["email"] == userEmail {
+                return status.Errorf(codes.AlreadyExists, "You are already in this team")
+            }
+        }
+
 		if len(members) >= maxTeamSize {
 			return status.Errorf(codes.FailedPrecondition, "Team at max size")
 		}
@@ -334,13 +345,18 @@ func JoinTeam(w http.ResponseWriter, r *http.Request) {
 		if !ok || userName == "" {
 			return status.Errorf(codes.InvalidArgument, "Missing user name")
 		}
-		updates := []firestore.Update{
-			{Path: "members", Value: firestore.ArrayUnion(map[string]interface{}{"email": userEmail, "name": userName})},
-		}
+		
+		newMember := map[string]interface{}{"email": userEmail, "name": userName}
+        updatedMembers := append(members, newMember)
 
-		if err := tx.Update(teamRef, updates); err != nil {
+		err = tx.Update(teamRef, []firestore.Update{
+            {Path: "members", Value: updatedMembers},
+        })
+
+		if err != nil {
 			return err
 		}
+		
 		return tx.Update(userRef, []firestore.Update{{Path: "TeamID", Value: teamRef.ID}})
 	})
 
