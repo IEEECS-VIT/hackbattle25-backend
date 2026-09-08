@@ -22,7 +22,7 @@ func main() {
 	routes.RegisterAuthRoutes(router, config.AuthClient, config.FirestoreClient)
 	routes.RegisterTeamRoutes(router)
 	
-	allowedOrigins := handlers.AllowedOrigins([]string{"http://localhost:3000", "http://localhost:3001", "http://localhost:3002","https://hackbattle-26-frontend.vercel.app","https://hackbattle.ieeecsvit.com"})
+	allowedOrigins := handlers.AllowedOrigins([]string{"http://localhost:3000", "http://localhost:3001", "http://localhost:3002","https://hackbattle-26-frontend.vercel.app","https://hackbattle.ieeecsvit.com","https://hackbattle-26-frontend-rry2.vercel.app"})
 	allowedMethods := handlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE", "OPTIONS"})
 	allowedHeaders := handlers.AllowedHeaders([]string{"Content-Type", "Authorization"})
 	allowCredentials := handlers.AllowCredentials()
