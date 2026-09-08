@@ -11,11 +11,10 @@ type Team struct {
 	CreatedAt   time.Time  `json:"createdAt" firestore:"CreatedAt"`
 	LeaderID    string     `json:"leader_id" firestore:"leaderId"`
 
-	// Track & Subtrack Fields
 	Track       *string    `json:"track,omitempty" firestore:"Track,omitempty"`
 	Subtrack    *string    `json:"subtrack,omitempty" firestore:"Subtrack,omitempty"`
 
-	// Submission Details
+	
 	ProjectDesc *string    `json:"project_desc,omitempty" firestore:"ProjectDesc,omitempty"`
 	GithubLink  *string    `json:"github_link,omitempty" firestore:"GithubLink,omitempty"`
 	FigmaLink   *string    `json:"figma_link,omitempty" firestore:"FigmaLink,omitempty"`
