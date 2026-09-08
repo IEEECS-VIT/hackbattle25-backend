@@ -3,3 +3,6 @@ serviceAccountKey.json
 .json
 admin
 # auth.html
+
+auth.html
+service.json
