@@ -522,6 +522,60 @@ func RemoveMember(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"message": "Member removed successfully"})
 }
 
+func DeleteTeam(w http.ResponseWriter, r *http.Request) {
+	ctx := context.Background()
+
+	teamID, err := verifyTeamLeader(ctx, r)
+	if err != nil {
+		handleFirestoreError(w, err)
+		return
+	}
+
+	userEmail, _ := getUserEmailFromContext(r)
+	teamRef := config.FirestoreClient.Collection("teams").Doc(teamID)
+
+	err = config.FirestoreClient.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		teamDoc, err := tx.Get(teamRef)
+		if err != nil {
+			return &httpError{"Team not found", http.StatusNotFound}
+		}
+
+		membersData, _ := teamDoc.DataAt("members")
+		members, _ := membersData.([]interface{})
+
+		// Clear TeamID and IsLead for all members
+		for _, member := range members {
+			memberMap, ok := member.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			email, _ := memberMap["email"].(string)
+			if email == "" {
+				continue
+			}
+			memberRef := config.FirestoreClient.Collection("users").Doc(email)
+			updates := []firestore.Update{
+				{Path: "TeamID", Value: firestore.Delete},
+				{Path: "IsLead", Value: firestore.Delete},
+			}
+			if err := tx.Update(memberRef, updates); err != nil {
+				return err
+			}
+		}
+
+		_ = userEmail
+		return tx.Delete(teamRef)
+	})
+
+	if err != nil {
+		handleFirestoreError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"message": "Team deleted successfully"})
+}
+
 // GetTeam returns full team details including Track & Subtrack
 func GetTeam(w http.ResponseWriter, r *http.Request) {
 	userEmail, ok := getUserEmailFromContext(r)
