@@ -17,4 +17,5 @@ func RegisterTeamRoutes(r *mux.Router) {
 	r.Handle("/teams/leave-team", middleware.AuthMiddleware(http.HandlerFunc(controllers.LeaveOrDeleteTeam))).Methods("DELETE")
 	r.Handle("/teams/project/submit", middleware.AuthMiddleware(http.HandlerFunc(controllers.SubmitProject))).Methods("POST")
 	r.Handle("/teams/project/update", middleware.AuthMiddleware(http.HandlerFunc(controllers.UpdateProject))).Methods("PUT")
+	r.Handle("/teams/track", middleware.AuthMiddleware(http.HandlerFunc(controllers.UpdateTrack))).Methods("PUT")
 }
