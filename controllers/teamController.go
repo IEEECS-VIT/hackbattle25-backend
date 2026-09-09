@@ -445,7 +445,7 @@ func LeaveTeam(w http.ResponseWriter, r *http.Request) {
 
 		teamRef := config.FirestoreClient.Collection("teams").Doc(teamID.(string))
 		teamUpdates := []firestore.Update{
-			{Path: "members", Value: firestore.ArrayRemove(map[string]interface{}{"email": userEmail, "name": userDoc.Data()["Name"]})},
+			{Path: "members", Value: firestore.ArrayRemove(map[string]interface{}{"email": userEmail, "name": userDoc.Data()["name"]})},
 		}
 		if err := tx.Update(teamRef, teamUpdates); err != nil {
 			return err
@@ -498,7 +498,7 @@ func RemoveMember(w http.ResponseWriter, r *http.Request) {
 			return &httpError{"Member user profile not found", http.StatusNotFound}
 		}
 
-		memberName, _ := memberDoc.DataAt("Name")
+		memberName, _ := memberDoc.DataAt("name")
 
 		teamUpdates := []firestore.Update{
 			{Path: "members", Value: firestore.ArrayRemove(map[string]interface{}{"email": payload.MemberEmail, "name": memberName})},
