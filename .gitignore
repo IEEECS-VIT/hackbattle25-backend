@@ -2,4 +2,5 @@ serviceAccountKey.json
 .env
 .json
 admin
+scripts/users.json
 # auth.html

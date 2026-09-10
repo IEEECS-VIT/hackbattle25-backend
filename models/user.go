@@ -7,7 +7,7 @@ type User struct {
 	Email              string    `json:"email" firestore:"email"`
 	TeamID             *string   `json:"teamId,omitempty" firestore:"TeamID,omitempty"`
 	IsLead             bool      `json:"isLead" firestore:"IsLead"`
-	IsVITian           string    `json:"isVITian" firestore:"isVITian"`
+	IsVITian           bool    `json:"isVITian" firestore:"isVITian"`
 	RegNo             string    `json:"regNo" firestore:"regNo"`
 	CreatedAt          time.Time `json:"createdAt" firestore:"createdAt"`
 }

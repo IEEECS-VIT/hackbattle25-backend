@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math/rand"
 	"net/http"
@@ -23,6 +24,7 @@ type TeamPayload struct {
 }
 
 const maxTeamSize = 5
+const minTeamSize = 2
 
 type httpError struct {
 	message string
@@ -228,29 +230,41 @@ func JoinTeam(w http.ResponseWriter, r *http.Request) {
 	userRef := config.FirestoreClient.Collection("users").Doc(userEmail)
 	teamRef := config.FirestoreClient.Collection("teams").Doc(req.TeamCode)
 
+	var statusCode int
+	var message string
+
 	err := config.FirestoreClient.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		userDoc, err := tx.Get(userRef)
 		if err != nil {
 			return status.Errorf(codes.NotFound, "User profile not found")
 		}
 		if teamID, _ := userDoc.DataAt("TeamID"); teamID != nil {
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{"message": "You are already in a team"})
+			statusCode = http.StatusCreated
+			message = "You are already in a team"
+			return nil
 		}
 
 		teamSnap, err := tx.Get(teamRef)
 		if err != nil {
 			if status.Code(err) == codes.NotFound {
-				w.WriteHeader(http.StatusNoContent)
-				json.NewEncoder(w).Encode(map[string]string{"message": "Team with that code not found"})
+				statusCode = http.StatusNoContent
+				message = "Team with that code not found"
+				return nil
 			}
 			return err
 		}
 
+		if _, err := teamSnap.DataAt("SubmittedAt"); err == nil {
+			statusCode = http.StatusForbidden
+			message = "Team has already submitted. No new members can join."
+			return nil
+		}
+
 		members, _ := teamSnap.DataAt("members")
 		if len(members.([]interface{})) >= maxTeamSize {
-			w.WriteHeader(http.StatusAlreadyReported)
-			json.NewEncoder(w).Encode(map[string]string{"message": "Team at max size"})
+			statusCode = http.StatusAlreadyReported
+			message = "Team at max size"
+			return nil
 		}
 
 		userName, _ := userDoc.Data()["name"]
@@ -270,6 +284,12 @@ func JoinTeam(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		handleFirestoreError(w, err)
+		return
+	}
+
+	if statusCode != 0 {
+		w.WriteHeader(statusCode)
+		json.NewEncoder(w).Encode(map[string]string{"message": message})
 		return
 	}
 
@@ -323,6 +343,9 @@ func LeaveOrDeleteTeam(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return status.Errorf(codes.NotFound, "Team not found")
 		}
+		if _, err := teamDoc.DataAt("SubmittedAt"); err == nil {
+			return status.Errorf(codes.FailedPrecondition, "Team has already submitted. No member can leave the team.")
+		}
 		membersData, _ := teamDoc.DataAt("members")
 		members := membersData.([]interface{})
 
@@ -354,10 +377,6 @@ func LeaveOrDeleteTeam(w http.ResponseWriter, r *http.Request) {
 					return err
 				}
 
-				if err := tx.Update(teamRef, []firestore.Update{{Path: "leaderId", Value: newLeadEmail}}); err != nil {
-					return err
-				}
-
 				// Remove leaving leader manually
 				newMembers := []interface{}{}
 				for _, member := range members {
@@ -367,7 +386,9 @@ func LeaveOrDeleteTeam(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 
+				// Update leaderId and members in a single write (a transaction cannot write the same document twice)
 				if err := tx.Update(teamRef, []firestore.Update{
+					{Path: "leaderId", Value: newLeadEmail},
 					{Path: "members", Value: newMembers},
 				}); err != nil {
 					return err
@@ -512,6 +533,14 @@ func RemoveMember(w http.ResponseWriter, r *http.Request) {
 			return &httpError{"Member user profile not found", http.StatusNotFound}
 		}
 
+		teamDoc, err := tx.Get(teamRef)
+		if err != nil {
+			return &httpError{"Team not found", http.StatusNotFound}
+		}
+		if _, err := teamDoc.DataAt("SubmittedAt"); err == nil {
+			return &httpError{"Team has already submitted. No members can be removed.", http.StatusForbidden}
+		}
+
 		memberName, _ := memberDoc.DataAt("name")
 
 		teamUpdates := []firestore.Update{
@@ -552,6 +581,10 @@ func DeleteTeam(w http.ResponseWriter, r *http.Request) {
 		teamDoc, err := tx.Get(teamRef)
 		if err != nil {
 			return &httpError{"Team not found", http.StatusNotFound}
+		}
+
+		if _, err := teamDoc.DataAt("SubmittedAt"); err == nil {
+			return &httpError{"Team has already submitted and cannot be deleted.", http.StatusForbidden}
 		}
 
 		membersData, _ := teamDoc.DataAt("members")
@@ -741,6 +774,11 @@ func SubmitProject(w http.ResponseWriter, r *http.Request) {
 		doc, err := tx.Get(teamRef)
 		if err != nil {
 			return &httpError{"Team not found", http.StatusNotFound}
+		}
+
+		membersData, _ := doc.DataAt("members")
+		if members, ok := membersData.([]interface{}); !ok || len(members) < minTeamSize {
+			return &httpError{fmt.Sprintf("Team must have at least %d members to submit", minTeamSize), http.StatusForbidden}
 		}
 
 		now := time.Now()
